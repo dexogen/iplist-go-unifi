@@ -1,0 +1,143 @@
+package sync
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/dexogen/iplist-go-unifi/internal/config"
+	"github.com/dexogen/iplist-go-unifi/internal/iplist"
+	"github.com/resnickio/unifi-go-sdk/pkg/unifi"
+)
+
+type fakeUniFi struct {
+	networks []unifi.Network
+	routes   []unifi.TrafficRoute
+	created  *unifi.TrafficRoute
+	updated  *unifi.TrafficRoute
+}
+
+func (f *fakeUniFi) Login(context.Context) error  { return nil }
+func (f *fakeUniFi) Logout(context.Context) error { return nil }
+func (f *fakeUniFi) ListNetworks(context.Context) ([]unifi.Network, error) {
+	return f.networks, nil
+}
+func (f *fakeUniFi) ListTrafficRoutes(context.Context) ([]unifi.TrafficRoute, error) {
+	return f.routes, nil
+}
+func (f *fakeUniFi) CreateTrafficRoute(_ context.Context, route *unifi.TrafficRoute) (*unifi.TrafficRoute, error) {
+	copy := *route
+	copy.ID = "created-id"
+	f.created = &copy
+	f.routes = append(f.routes, copy)
+	return &copy, nil
+}
+func (f *fakeUniFi) UpdateTrafficRoute(_ context.Context, id string, route *unifi.TrafficRoute) (*unifi.TrafficRoute, error) {
+	copy := *route
+	copy.ID = id
+	f.updated = &copy
+	return &copy, nil
+}
+
+func TestRunCreatesManagedRoute(t *testing.T) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("8.8.8.8\n"))
+	}))
+	defer sourceServer.Close()
+
+	client := &fakeUniFi{
+		networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+	}
+	cfg := testConfig(sourceServer.URL)
+	r := &Reconciler{
+		Config:  cfg,
+		Client:  client,
+		Fetcher: iplist.Fetcher{Client: sourceServer.Client()},
+	}
+	status, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Sources) != 1 || status.Sources[0].Action != "created" {
+		t.Fatalf("status = %+v", status.Sources)
+	}
+	if client.created == nil {
+		t.Fatal("route was not created")
+	}
+	if client.created.MatchingTarget != "IP" {
+		t.Fatalf("matching target = %q", client.created.MatchingTarget)
+	}
+	if got := client.created.IPAddresses; len(got) != 1 || got[0] != "8.8.8.8/32" {
+		t.Fatalf("ip addresses = %v", got)
+	}
+	if routeOwner(client.created.Description) != owner {
+		t.Fatalf("missing owner marker: %q", client.created.Description)
+	}
+}
+
+func TestRunBlocksEmptySource(t *testing.T) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer sourceServer.Close()
+
+	client := &fakeUniFi{networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}}}
+	cfg := testConfig(sourceServer.URL)
+	r := &Reconciler{
+		Config:  cfg,
+		Client:  client,
+		Fetcher: iplist.Fetcher{Client: sourceServer.Client()},
+	}
+	status, err := r.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected safety error")
+	}
+	if status.Sources[0].Action != "blocked" {
+		t.Fatalf("action = %q", status.Sources[0].Action)
+	}
+	if client.created != nil {
+		t.Fatal("empty source should not create route")
+	}
+}
+
+func TestRunBlocksMatchingUnmanagedRoute(t *testing.T) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("8.8.8.8\n"))
+	}))
+	defer sourceServer.Close()
+
+	client := &fakeUniFi{
+		networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+		routes: []unifi.TrafficRoute{{
+			ID:          "manual-id",
+			Description: "test",
+		}},
+	}
+	cfg := testConfig(sourceServer.URL)
+	r := &Reconciler{
+		Config:  cfg,
+		Client:  client,
+		Fetcher: iplist.Fetcher{Client: sourceServer.Client()},
+	}
+	status, err := r.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected unmanaged route safety error")
+	}
+	if status.Sources[0].Action != "blocked" {
+		t.Fatalf("action = %q", status.Sources[0].Action)
+	}
+	if client.created != nil || client.updated != nil {
+		t.Fatal("unmanaged route should not be created or updated")
+	}
+}
+
+func testConfig(url string) config.Config {
+	return config.Config{
+		Safety: config.SafetyConfig{MaxEntries: 20000, BackupDir: ""},
+		Sources: []config.SourceConfig{{
+			Name:      "test",
+			URL:       url,
+			Type:      "ipv4_cidr",
+			NetworkID: "wan-id",
+		}},
+	}
+}

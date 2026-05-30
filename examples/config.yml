@@ -1,0 +1,41 @@
+unifi:
+  base_url: "https://unifi.example.com"
+  username: "iplist"
+  password: "change-me"
+  site: "default"
+  insecure_skip_verify: false
+  timeout: "20s"
+
+schedule:
+  cron: "0 0 * * *"
+  timezone: "Europe/Moscow"
+  run_on_start: true
+
+server:
+  listen: ":18086"
+
+safety:
+  dry_run: true
+  min_entries: 10
+  max_entries: 20000
+  allow_empty: false
+  backup_dir: "/var/lib/iplist-go-unifi/backups"
+  keep_backups: 20
+
+sources:
+  - name: "latest-ipv4"
+    url: "https://iplist.example.com/api/latest/export?format=unifi&data=ipv4"
+    type: "ipv4_cidr"
+    network_name: "WAN"
+    target_devices:
+      - type: "ALL_CLIENTS"
+
+  - name: "beta-ipv4"
+    url: "https://iplist.example.com/api/beta/export?format=unifi&data=ipv4"
+    type: "ipv4_cidr"
+    network_name: "WAN"
+
+  - name: "russia-ipv4"
+    url: "https://iplist.example.com/api/russia/export?format=unifi&data=ipv4"
+    type: "ipv4_cidr"
+    network_name: "WAN"
