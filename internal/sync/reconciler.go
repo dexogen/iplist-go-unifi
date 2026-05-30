@@ -428,6 +428,9 @@ func (r *Reconciler) pruneBackups() {
 		}
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name() > files[j].Name() })
+	if len(files) <= keep {
+		return
+	}
 	for _, entry := range files[keep:] {
 		_ = os.Remove(filepath.Join(r.Config.Safety.BackupDir, entry.Name()))
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dexogen/iplist-go-unifi/internal/config"
@@ -127,6 +129,29 @@ func TestRunBlocksMatchingUnmanagedRoute(t *testing.T) {
 	}
 	if client.created != nil || client.updated != nil {
 		t.Fatal("unmanaged route should not be created or updated")
+	}
+}
+
+func TestPruneBackupsKeepsSmallBackupSet(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"20260530T100000Z-test-one.json", "20260530T110000Z-test-two.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Reconciler{Config: config.Config{Safety: config.SafetyConfig{
+		BackupDir:   dir,
+		KeepBackups: 20,
+	}}}
+
+	r.pruneBackups()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("backup count = %d", len(entries))
 	}
 }
 
