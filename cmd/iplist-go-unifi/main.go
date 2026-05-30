@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	_ "time/tzdata"
 
 	"github.com/dexogen/iplist-go-unifi/internal/app"
 	"github.com/dexogen/iplist-go-unifi/internal/config"
