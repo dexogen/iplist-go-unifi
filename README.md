@@ -46,6 +46,8 @@ docker run --rm \
   iplist-go-unifi:local
 ```
 
+В runtime-volume сервис хранит бэкапы правил и локальный state с `route_id`/`hash`.
+
 Однократная проверка без записи в UniFi:
 
 ```bash

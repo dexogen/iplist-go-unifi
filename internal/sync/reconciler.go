@@ -55,8 +55,15 @@ func (r *Reconciler) Run(ctx context.Context) (RunStatus, error) {
 		return status, fmt.Errorf("list traffic routes: %w", err)
 	}
 
+	state, err := loadState(r.Config.Safety.StateFile)
+	if err != nil {
+		status.FinishedAt = time.Now().UTC()
+		status.Error = err.Error()
+		return status, fmt.Errorf("load state: %w", err)
+	}
+
 	for _, source := range r.Config.Sources {
-		sourceStatus := r.reconcileSource(ctx, source, networks, routes)
+		sourceStatus := r.reconcileSource(ctx, source, networks, routes, &state)
 		status.Sources = append(status.Sources, sourceStatus)
 		if sourceStatus.Error != "" {
 			err = errors.Join(err, fmt.Errorf("%s: %s", source.Name, sourceStatus.Error))
@@ -73,7 +80,7 @@ func (r *Reconciler) Run(ctx context.Context) (RunStatus, error) {
 	return status, err
 }
 
-func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceConfig, networks []unifi.Network, routes []unifi.TrafficRoute) SourceStatus {
+func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceConfig, networks []unifi.Network, routes []unifi.TrafficRoute, state *stateFile) SourceStatus {
 	st := SourceStatus{Name: source.Name, DryRun: r.Config.Safety.DryRun}
 	result, err := r.Fetcher.Fetch(ctx, source.URL, source.Type)
 	if err != nil {
@@ -106,20 +113,23 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 		targets = []unifi.TrafficRuleTarget{{Type: "ALL_CLIENTS"}}
 	}
 
-	current := findManagedRoute(routes, source.Name)
+	current := findStateRoute(routes, (*state).Routes[source.Name].RouteID)
 	if current == nil {
-		unmanaged := findUnmanagedRoute(routes, source)
-		if unmanaged != nil {
+		current = findLegacyManagedRoute(routes, source.Name)
+	}
+	if current == nil {
+		named := findNamedRoute(routes, source.Name)
+		if named != nil {
 			if !source.AdoptExisting {
 				st.Action = "blocked"
-				st.RouteID = unmanaged.ID
+				st.RouteID = named.ID
 				st.Error = "matching unmanaged UniFi traffic route exists; set adopt_existing=true to take ownership"
 				return st
 			}
-			current = unmanaged
+			current = named
 		}
 	}
-	desired := desiredRoute(source, result.Values, result.Hash, networkID, targets)
+	desired := desiredRoute(source, result.Values, networkID, targets)
 	if current == nil {
 		st.Action = "create"
 		if r.Config.Safety.DryRun {
@@ -133,14 +143,29 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 		}
 		st.Action = "created"
 		st.RouteID = created.ID
+		setRouteState(state, source.Name, created.ID, result.Hash)
+		if err := saveState(r.Config.Safety.StateFile, *state); err != nil {
+			st.Action = "failed"
+			st.Error = err.Error()
+		}
 		return st
 	}
 
 	st.RouteID = current.ID
-	currentHash := routeHash(current.Description)
-	if currentHash != "" && strings.HasPrefix(result.Hash, currentHash) && routeEquivalent(*current, desired) {
+	currentHash := (*state).Routes[source.Name].Hash
+	if currentHash == "" {
+		currentHash = routeHash(current.Description)
+	}
+	if routeEquivalent(*current, desired) && (currentHash == "" || strings.HasPrefix(result.Hash, currentHash)) {
 		st.Action = "unchanged"
 		st.Unchanged = true
+		if !r.Config.Safety.DryRun {
+			setRouteState(state, source.Name, current.ID, result.Hash)
+			if err := saveState(r.Config.Safety.StateFile, *state); err != nil {
+				st.Action = "failed"
+				st.Error = err.Error()
+			}
+		}
 		return st
 	}
 
@@ -166,6 +191,11 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 	}
 	st.Action = "updated"
 	st.RouteID = updated.ID
+	setRouteState(state, source.Name, updated.ID, result.Hash)
+	if err := saveState(r.Config.Safety.StateFile, *state); err != nil {
+		st.Action = "failed"
+		st.Error = err.Error()
+	}
 	return st
 }
 
@@ -182,12 +212,12 @@ func (r *Reconciler) validateSafety(source config.SourceConfig, count int) error
 	return nil
 }
 
-func desiredRoute(source config.SourceConfig, values []string, hash, networkID string, targets []unifi.TrafficRuleTarget) *unifi.TrafficRoute {
+func desiredRoute(source config.SourceConfig, values []string, networkID string, targets []unifi.TrafficRuleTarget) *unifi.TrafficRoute {
 	enabled := true
 	route := &unifi.TrafficRoute{
 		Name:              source.Name,
 		Enabled:           &enabled,
-		Description:       marker(source.Name, hash),
+		Description:       source.Name,
 		NetworkID:         networkID,
 		TargetDevices:     targets,
 		KillSwitchEnabled: source.KillSwitch,
@@ -204,7 +234,19 @@ func desiredRoute(source config.SourceConfig, values []string, hash, networkID s
 	return route
 }
 
-func findManagedRoute(routes []unifi.TrafficRoute, sourceName string) *unifi.TrafficRoute {
+func findStateRoute(routes []unifi.TrafficRoute, routeID string) *unifi.TrafficRoute {
+	if routeID == "" {
+		return nil
+	}
+	for i := range routes {
+		if routes[i].ID == routeID {
+			return &routes[i]
+		}
+	}
+	return nil
+}
+
+func findLegacyManagedRoute(routes []unifi.TrafficRoute, sourceName string) *unifi.TrafficRoute {
 	for i := range routes {
 		if routeOwner(routes[i].Description) == owner && routeSource(routes[i].Description) == sourceName {
 			return &routes[i]
@@ -213,12 +255,12 @@ func findManagedRoute(routes []unifi.TrafficRoute, sourceName string) *unifi.Tra
 	return nil
 }
 
-func findUnmanagedRoute(routes []unifi.TrafficRoute, source config.SourceConfig) *unifi.TrafficRoute {
+func findNamedRoute(routes []unifi.TrafficRoute, sourceName string) *unifi.TrafficRoute {
 	for i := range routes {
 		if routeOwner(routes[i].Description) == owner {
 			continue
 		}
-		if routes[i].Description == source.Name {
+		if routes[i].Description == sourceName {
 			return &routes[i]
 		}
 	}
@@ -227,6 +269,9 @@ func findUnmanagedRoute(routes []unifi.TrafficRoute, source config.SourceConfig)
 
 func routeEquivalent(current unifi.TrafficRoute, desired *unifi.TrafficRoute) bool {
 	if current.MatchingTarget != desired.MatchingTarget || current.NetworkID != desired.NetworkID {
+		return false
+	}
+	if current.Description != desired.Description {
 		return false
 	}
 	if !sameBool(current.Enabled, desired.Enabled) || !sameBool(current.KillSwitchEnabled, desired.KillSwitchEnabled) {

@@ -41,6 +41,7 @@ type SafetyConfig struct {
 	AllowEmpty  bool   `yaml:"allow_empty"`
 	BackupDir   string `yaml:"backup_dir"`
 	KeepBackups int    `yaml:"keep_backups"`
+	StateFile   string `yaml:"state_file"`
 }
 
 type ServerConfig struct {
@@ -103,6 +104,9 @@ func (cfg *Config) applyDefaults() {
 	}
 	if cfg.Safety.BackupDir == "" {
 		cfg.Safety.BackupDir = "/var/lib/iplist-go-unifi/backups"
+	}
+	if cfg.Safety.StateFile == "" {
+		cfg.Safety.StateFile = "/var/lib/iplist-go-unifi/state/routes.json"
 	}
 	if cfg.Safety.KeepBackups == 0 {
 		cfg.Safety.KeepBackups = 20

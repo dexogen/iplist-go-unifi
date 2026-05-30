@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,8 +74,8 @@ func TestRunCreatesManagedRoute(t *testing.T) {
 	if got := client.created.IPAddresses; len(got) != 1 || got[0] != "8.8.8.8/32" {
 		t.Fatalf("ip addresses = %v", got)
 	}
-	if routeOwner(client.created.Description) != owner {
-		t.Fatalf("missing owner marker: %q", client.created.Description)
+	if client.created.Description != "test" {
+		t.Fatalf("description = %q", client.created.Description)
 	}
 }
 
@@ -132,6 +133,83 @@ func TestRunBlocksMatchingUnmanagedRoute(t *testing.T) {
 	}
 }
 
+func TestRunStoresRouteState(t *testing.T) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("8.8.8.8\n"))
+	}))
+	defer sourceServer.Close()
+
+	statePath := filepath.Join(t.TempDir(), "state", "routes.json")
+	client := &fakeUniFi{
+		networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+	}
+	cfg := testConfig(sourceServer.URL)
+	cfg.Safety.StateFile = statePath
+	r := &Reconciler{
+		Config:  cfg,
+		Client:  client,
+		Fetcher: iplist.Fetcher{Client: sourceServer.Client()},
+	}
+
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state stateFile
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Routes["test"].RouteID != "created-id" {
+		t.Fatalf("route id = %q", state.Routes["test"].RouteID)
+	}
+	if state.Routes["test"].Hash == "" {
+		t.Fatal("hash was not stored")
+	}
+}
+
+func TestRunCleansLegacyManagedDescription(t *testing.T) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("8.8.8.8\n"))
+	}))
+	defer sourceServer.Close()
+
+	client := &fakeUniFi{
+		networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+		routes: []unifi.TrafficRoute{{
+			ID:             "legacy-id",
+			Description:    marker("test", "oldhash"),
+			MatchingTarget: "IP",
+			NetworkID:      "wan-id",
+			IPAddresses:    []string{"8.8.8.8/32"},
+		}},
+	}
+	cfg := testConfig(sourceServer.URL)
+	cfg.Safety.StateFile = filepath.Join(t.TempDir(), "state", "routes.json")
+	r := &Reconciler{
+		Config:  cfg,
+		Client:  client,
+		Fetcher: iplist.Fetcher{Client: sourceServer.Client()},
+	}
+
+	status, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Sources[0].Action != "updated" {
+		t.Fatalf("action = %q", status.Sources[0].Action)
+	}
+	if client.updated == nil {
+		t.Fatal("legacy route was not updated")
+	}
+	if client.updated.Description != "test" {
+		t.Fatalf("description = %q", client.updated.Description)
+	}
+}
+
 func TestPruneBackupsKeepsSmallBackupSet(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"20260530T100000Z-test-one.json", "20260530T110000Z-test-two.json"} {
@@ -157,7 +235,7 @@ func TestPruneBackupsKeepsSmallBackupSet(t *testing.T) {
 
 func testConfig(url string) config.Config {
 	return config.Config{
-		Safety: config.SafetyConfig{MaxEntries: 20000, BackupDir: ""},
+		Safety: config.SafetyConfig{MaxEntries: 20000, BackupDir: "", StateFile: ""},
 		Sources: []config.SourceConfig{{
 			Name:      "test",
 			URL:       url,
