@@ -210,6 +210,53 @@ func TestRunCleansLegacyManagedDescription(t *testing.T) {
 	}
 }
 
+func TestRunTreatsDefaultKillSwitchAsUnchanged(t *testing.T) {
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("8.8.8.8\n"))
+	}))
+	defer sourceServer.Close()
+
+	enabled := true
+	killSwitch := false
+	statePath := filepath.Join(t.TempDir(), "state", "routes.json")
+	if err := saveState(statePath, stateFile{Routes: map[string]routeState{
+		"test": {RouteID: "route-id"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeUniFi{
+		networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+		routes: []unifi.TrafficRoute{{
+			ID:                "route-id",
+			Enabled:           &enabled,
+			Description:       "test",
+			MatchingTarget:    "IP",
+			NetworkID:         "wan-id",
+			TargetDevices:     []unifi.TrafficRuleTarget{{Type: "ALL_CLIENTS"}},
+			IPAddresses:       []string{"8.8.8.8/32"},
+			KillSwitchEnabled: &killSwitch,
+		}},
+	}
+	cfg := testConfig(sourceServer.URL)
+	cfg.Safety.StateFile = statePath
+	r := &Reconciler{
+		Config:  cfg,
+		Client:  client,
+		Fetcher: iplist.Fetcher{Client: sourceServer.Client()},
+	}
+
+	status, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Sources[0].Action != "unchanged" {
+		t.Fatalf("action = %q", status.Sources[0].Action)
+	}
+	if client.updated != nil {
+		t.Fatal("unchanged route should not be updated")
+	}
+}
+
 func TestPruneBackupsKeepsSmallBackupSet(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"20260530T100000Z-test-one.json", "20260530T110000Z-test-two.json"} {

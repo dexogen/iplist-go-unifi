@@ -214,13 +214,18 @@ func (r *Reconciler) validateSafety(source config.SourceConfig, count int) error
 
 func desiredRoute(source config.SourceConfig, values []string, networkID string, targets []unifi.TrafficRuleTarget) *unifi.TrafficRoute {
 	enabled := true
+	killSwitch := source.KillSwitch
+	if killSwitch == nil {
+		disabled := false
+		killSwitch = &disabled
+	}
 	route := &unifi.TrafficRoute{
 		Name:              source.Name,
 		Enabled:           &enabled,
 		Description:       source.Name,
 		NetworkID:         networkID,
 		TargetDevices:     targets,
-		KillSwitchEnabled: source.KillSwitch,
+		KillSwitchEnabled: killSwitch,
 	}
 	if source.Type == "domains" {
 		route.MatchingTarget = "DOMAIN"
