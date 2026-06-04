@@ -81,10 +81,9 @@ func New(cfg config.Config, logger *slog.Logger) (*Service, error) {
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	s.markRunStarted(time.Now())
 	status, err := s.runner.Run(ctx)
-	s.mu.Lock()
-	s.status = status
-	s.mu.Unlock()
+	s.setStatus(status)
 	for _, source := range status.Sources {
 		attrs := []any{
 			"source", source.Name,
@@ -104,6 +103,22 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		s.logger.Info("source sync finished", attrs...)
 	}
 	return err
+}
+
+func (s *Service) markRunStarted(startedAt time.Time) {
+	s.setStatus(reconcilesync.RunStatus{
+		StartedAt: startedAt.UTC(),
+		Sources:   []reconcilesync.SourceStatus{},
+	})
+}
+
+func (s *Service) setStatus(status reconcilesync.RunStatus) {
+	if status.Sources == nil {
+		status.Sources = []reconcilesync.SourceStatus{}
+	}
+	s.mu.Lock()
+	s.status = status
+	s.mu.Unlock()
 }
 
 func (s *Service) Inspect(ctx context.Context, w io.Writer) error {
