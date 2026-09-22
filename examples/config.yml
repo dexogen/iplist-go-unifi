@@ -4,7 +4,7 @@ unifi:
   password: "change-me"
   site: "default"
   insecure_skip_verify: false
-  timeout: "20s"
+  timeout: "120s"
 
 schedule:
   cron: "0 0 * * *"

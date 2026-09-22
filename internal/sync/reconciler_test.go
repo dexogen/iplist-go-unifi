@@ -236,7 +236,7 @@ func TestRunCleansLegacyManagedDescription(t *testing.T) {
 	}
 }
 
-func TestRunTreatsDefaultKillSwitchAsUnchanged(t *testing.T) {
+func TestRunTreatsMatchingRouteWithStaleHashAndDefaultKillSwitchAsUnchanged(t *testing.T) {
 	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("8.8.8.8\n"))
 	}))
@@ -246,7 +246,7 @@ func TestRunTreatsDefaultKillSwitchAsUnchanged(t *testing.T) {
 	killSwitch := false
 	statePath := filepath.Join(t.TempDir(), "state", "routes.json")
 	if err := saveState(statePath, stateFile{Routes: map[string]routeState{
-		"test": {RouteID: "route-id"},
+		"test": {RouteID: "route-id", Hash: "outdated-local-hash"},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +280,50 @@ func TestRunTreatsDefaultKillSwitchAsUnchanged(t *testing.T) {
 	}
 	if client.updated != nil {
 		t.Fatal("unchanged route should not be updated")
+	}
+}
+
+type ambiguousUniFi struct {
+	*fakeUniFi
+	apply  bool
+	writes int
+}
+
+func (f *ambiguousUniFi) UpdateTrafficRoute(_ context.Context, id string, route *unifi.TrafficRoute) (*unifi.TrafficRoute, error) {
+	f.writes++
+	if f.apply {
+		copy := *route
+		copy.ID = id
+		f.routes = []unifi.TrafficRoute{copy}
+	}
+	return nil, context.DeadlineExceeded
+}
+
+func TestRunVerifiesControllerAfterAmbiguousWrite(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		t.Run(map[bool]string{false: "write failed", true: "write succeeded response lost"}[apply], func(t *testing.T) {
+			sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("8.8.8.8\n9.9.9.9\n"))
+			}))
+			defer sourceServer.Close()
+			client := &ambiguousUniFi{fakeUniFi: &fakeUniFi{
+				networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+				routes:   []unifi.TrafficRoute{{ID: "route-id", Description: marker("test", "old"), MatchingTarget: "IP", NetworkID: "wan-id", IPAddresses: []string{"8.8.8.8/32"}}},
+			}, apply: apply}
+			cfg := testConfig(sourceServer.URL)
+			cfg.Safety.StateFile = filepath.Join(t.TempDir(), "routes.json")
+			r := &Reconciler{Config: cfg, Client: client, Fetcher: iplist.Fetcher{Client: sourceServer.Client()}}
+			status, err := r.Run(context.Background())
+			if apply && (err != nil || status.Sources[0].Action != "updated") {
+				t.Fatalf("confirmed update reported as failure: %+v %v", status, err)
+			}
+			if !apply && (err == nil || status.Sources[0].Action != "failed") {
+				t.Fatalf("unconfirmed update reported as success: %+v %v", status, err)
+			}
+			if client.writes != 1 {
+				t.Fatalf("ambiguous write was repeated: %d", client.writes)
+			}
+		})
 	}
 }
 

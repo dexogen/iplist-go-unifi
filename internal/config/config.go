@@ -100,7 +100,7 @@ func (cfg *Config) applyDefaults() {
 		cfg.UniFi.Site = "default"
 	}
 	if cfg.UniFi.Timeout == "" {
-		cfg.UniFi.Timeout = "20s"
+		cfg.UniFi.Timeout = "120s"
 	}
 	if cfg.Schedule.Cron == "" {
 		cfg.Schedule.Cron = "0 0 * * *"

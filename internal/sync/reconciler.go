@@ -159,11 +159,9 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 	}
 
 	st.RouteID = current.ID
-	currentHash := (*state).Routes[source.Name].Hash
-	if currentHash == "" {
-		currentHash = routeHash(current.Description)
-	}
-	if routeEquivalent(*current, desired) && (currentHash == "" || strings.HasPrefix(result.Hash, currentHash)) {
+	// The controller is authoritative: an earlier write may have succeeded even
+	// when its response timed out and the local hash was not saved.
+	if routeEquivalent(*current, desired) {
 		st.Action = "unchanged"
 		st.Unchanged = true
 		if !r.Config.Safety.DryRun {
@@ -202,6 +200,16 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 	st.Backup = backupPath
 	st.Action = "update"
 	updated, err := r.Client.UpdateTrafficRoute(ctx, current.ID, desired)
+	if err != nil && ctx.Err() == nil {
+		if routes, readErr := r.Client.ListTrafficRoutes(ctx); readErr == nil {
+			for _, route := range routes {
+				if route.ID == current.ID && routeEquivalent(route, desired) {
+					updated, err = &route, nil
+					break
+				}
+			}
+		}
+	}
 	if err != nil {
 		st.Action = "failed"
 		st.Error = err.Error()

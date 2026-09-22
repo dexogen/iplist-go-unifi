@@ -101,7 +101,7 @@ func New(cfg Config) (Client, error) {
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify}
 	timeout := cfg.Timeout
 	if timeout == 0 {
-		timeout = 20 * time.Second
+		timeout = 120 * time.Second
 	}
 	return &RawClient{
 		baseURL:  strings.TrimRight(cfg.BaseURL, "/"),
