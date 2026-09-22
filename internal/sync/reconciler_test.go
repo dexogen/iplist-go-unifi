@@ -102,6 +102,32 @@ func TestRunBlocksEmptySource(t *testing.T) {
 	}
 }
 
+func TestRunBlocksIncompleteOrStaleSourceWithoutWriting(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(map[bool]string{false: "coverage loss", true: "missing freshness"}[stale], func(t *testing.T) {
+			sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("8.8.8.8\n"))
+			}))
+			defer sourceServer.Close()
+			client := &fakeUniFi{
+				networks: []unifi.Network{{ID: "wan-id", Name: "WAN"}},
+				routes:   []unifi.TrafficRoute{{ID: "managed-id", Description: marker("test", "oldhash"), MatchingTarget: "IP", NetworkID: "wan-id", IPAddresses: []string{"8.8.8.8/32", "1.1.1.1/32", "9.9.9.9/32"}}},
+			}
+			cfg := testConfig(sourceServer.URL)
+			cfg.Safety.RequireFresh = stale
+			cfg.Safety.StateFile = filepath.Join(t.TempDir(), "routes.json")
+			r := &Reconciler{Config: cfg, Client: client, Fetcher: iplist.Fetcher{Client: sourceServer.Client()}}
+			status, err := r.Run(context.Background())
+			if err == nil || status.Sources[0].Action != "blocked" {
+				t.Fatalf("expected blocked source: status=%+v error=%v", status, err)
+			}
+			if client.updated != nil || client.created != nil {
+				t.Fatal("blocked source must not write to UniFi")
+			}
+		})
+	}
+}
+
 func TestRunBlocksMatchingUnmanagedRoute(t *testing.T) {
 	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("8.8.8.8\n"))

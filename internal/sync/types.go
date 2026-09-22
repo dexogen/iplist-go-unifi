@@ -10,15 +10,18 @@ type RunStatus struct {
 }
 
 type SourceStatus struct {
-	Name      string `json:"name"`
-	Action    string `json:"action"`
-	Entries   int    `json:"entries"`
-	Hash      string `json:"hash,omitempty"`
-	RouteID   string `json:"route_id,omitempty"`
-	Error     string `json:"error,omitempty"`
-	DryRun    bool   `json:"dry_run"`
-	Backup    string `json:"backup,omitempty"`
-	Unchanged bool   `json:"unchanged"`
-	Added     int    `json:"added,omitempty"`
-	Removed   int    `json:"removed,omitempty"`
+	Name            string    `json:"name"`
+	Action          string    `json:"action"`
+	Entries         int       `json:"entries"`
+	Hash            string    `json:"hash,omitempty"`
+	RouteID         string    `json:"route_id,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	DryRun          bool      `json:"dry_run"`
+	Backup          string    `json:"backup,omitempty"`
+	Unchanged       bool      `json:"unchanged"`
+	Added           int       `json:"added,omitempty"`
+	Removed         int       `json:"removed,omitempty"`
+	Snapshot        string    `json:"snapshot,omitempty"`
+	SourceUpdatedAt time.Time `json:"source_updated_at,omitempty"`
+	Uncovered       int       `json:"uncovered,omitempty"`
 }

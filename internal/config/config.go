@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"time"
@@ -35,13 +36,16 @@ type ScheduleConfig struct {
 }
 
 type SafetyConfig struct {
-	DryRun      bool   `yaml:"dry_run"`
-	MinEntries  int    `yaml:"min_entries"`
-	MaxEntries  int    `yaml:"max_entries"`
-	AllowEmpty  bool   `yaml:"allow_empty"`
-	BackupDir   string `yaml:"backup_dir"`
-	KeepBackups int    `yaml:"keep_backups"`
-	StateFile   string `yaml:"state_file"`
+	DryRun          bool     `yaml:"dry_run"`
+	MinEntries      int      `yaml:"min_entries"`
+	MaxEntries      int      `yaml:"max_entries"`
+	AllowEmpty      bool     `yaml:"allow_empty"`
+	BackupDir       string   `yaml:"backup_dir"`
+	KeepBackups     int      `yaml:"keep_backups"`
+	StateFile       string   `yaml:"state_file"`
+	MaxRemovalRatio *float64 `yaml:"max_removal_ratio"`
+	RequireFresh    bool     `yaml:"require_fresh"`
+	MaxSourceAge    string   `yaml:"max_source_age"`
 }
 
 type ServerConfig struct {
@@ -68,9 +72,11 @@ type TargetDevice struct {
 }
 
 type SourceSafetyConfig struct {
-	MinEntries *int  `yaml:"min_entries"`
-	MaxEntries *int  `yaml:"max_entries"`
-	AllowEmpty *bool `yaml:"allow_empty"`
+	MinEntries      *int     `yaml:"min_entries"`
+	MaxEntries      *int     `yaml:"max_entries"`
+	AllowEmpty      *bool    `yaml:"allow_empty"`
+	MaxRemovalRatio *float64 `yaml:"max_removal_ratio"`
+	RequireFresh    *bool    `yaml:"require_fresh"`
 }
 
 func Load(path string) (Config, error) {
@@ -114,6 +120,9 @@ func (cfg *Config) applyDefaults() {
 	if cfg.Safety.MaxEntries == 0 {
 		cfg.Safety.MaxEntries = 20000
 	}
+	if cfg.Safety.MaxSourceAge == "" {
+		cfg.Safety.MaxSourceAge = "48h"
+	}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = ":18086"
 	}
@@ -149,6 +158,14 @@ func (cfg Config) Validate() error {
 	if len(cfg.Sources) == 0 {
 		return errors.New("at least one source is required")
 	}
+	if err := validateRatio(cfg.Safety.MaxRemovalRatio); err != nil {
+		return err
+	}
+	if cfg.Safety.MaxSourceAge != "" {
+		if age, err := time.ParseDuration(cfg.Safety.MaxSourceAge); err != nil || age <= 0 {
+			return errors.New("safety.max_source_age must be a positive duration")
+		}
+	}
 	names := map[string]struct{}{}
 	for i, source := range cfg.Sources {
 		if err := source.Validate(); err != nil {
@@ -163,6 +180,9 @@ func (cfg Config) Validate() error {
 }
 
 func (s SourceConfig) Validate() error {
+	if err := validateRatio(s.Safety.MaxRemovalRatio); err != nil {
+		return err
+	}
 	if s.Name == "" {
 		return errors.New("name is required")
 	}
@@ -181,6 +201,30 @@ func (s SourceConfig) Validate() error {
 		return errors.New("network_id or network_name is required")
 	}
 	return nil
+}
+
+func validateRatio(value *float64) error {
+	if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < 0 || *value > 1) {
+		return errors.New("max_removal_ratio must be between 0 and 1")
+	}
+	return nil
+}
+
+func (s SourceConfig) RemovalLimit(global *float64) float64 {
+	if s.Safety.MaxRemovalRatio != nil {
+		return *s.Safety.MaxRemovalRatio
+	}
+	if global != nil {
+		return *global
+	}
+	return .35
+}
+
+func (s SourceConfig) RequiresFresh(global bool) bool {
+	if s.Safety.RequireFresh != nil {
+		return *s.Safety.RequireFresh
+	}
+	return global
 }
 
 func (s SourceConfig) MinEntries(global int) int {

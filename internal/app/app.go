@@ -45,6 +45,7 @@ type Service struct {
 	cfg    config.Config
 	logger *slog.Logger
 	mu     sync.RWMutex
+	runMu  sync.Mutex
 	status reconcilesync.RunStatus
 	runner *reconcilesync.Reconciler
 }
@@ -81,6 +82,11 @@ func New(cfg config.Config, logger *slog.Logger) (*Service, error) {
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
+	if !s.runMu.TryLock() {
+		s.logger.Info("sync already running; skipping overlapping invocation")
+		return nil
+	}
+	defer s.runMu.Unlock()
 	s.markRunStarted(time.Now())
 	status, err := s.runner.Run(ctx)
 	s.setStatus(status)

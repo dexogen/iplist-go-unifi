@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"time"
 )
 
 const maxSourceBytes = 16 << 20
@@ -20,8 +21,11 @@ type Fetcher struct {
 }
 
 type Result struct {
-	Values []string
-	Hash   string
+	Values          []string
+	Hash            string
+	Snapshot        string
+	SourceStatus    string
+	SourceUpdatedAt time.Time
 }
 
 func (f Fetcher) Fetch(ctx context.Context, sourceURL, dataType string) (Result, error) {
@@ -56,7 +60,14 @@ func (f Fetcher) Fetch(ctx context.Context, sourceURL, dataType string) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Values: values, Hash: HashValues(values)}, nil
+	result := Result{Values: values, Hash: HashValues(values), Snapshot: resp.Header.Get("X-IPList-Snapshot"), SourceStatus: resp.Header.Get("X-IPList-Source-Status")}
+	if stamp := resp.Header.Get("X-IPList-Source-Updated-At"); stamp != "" {
+		result.SourceUpdatedAt, err = time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			return Result{}, fmt.Errorf("invalid source freshness timestamp: %w", err)
+		}
+	}
+	return result, nil
 }
 
 func NormalizeLines(body, dataType string) ([]string, error) {

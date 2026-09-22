@@ -90,6 +90,13 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 	}
 	st.Entries = len(result.Values)
 	st.Hash = result.Hash
+	st.Snapshot = result.Snapshot
+	st.SourceUpdatedAt = result.SourceUpdatedAt
+	if err := r.validateFreshness(source, result); err != nil {
+		st.Action = "blocked"
+		st.Error = err.Error()
+		return st
+	}
 
 	if err := r.validateSafety(source, len(result.Values)); err != nil {
 		st.Action = "blocked"
@@ -170,6 +177,17 @@ func (r *Reconciler) reconcileSource(ctx context.Context, source config.SourceCo
 	}
 
 	st.Added, st.Removed = routeDiffCounts(*current, desired)
+	st.Uncovered = uncoveredRoutes(*current, desired)
+	previousCount := len(current.IPAddresses)
+	if desired.MatchingTarget == "DOMAIN" {
+		previousCount = len(current.Domains)
+	}
+	limit := source.RemovalLimit(r.Config.Safety.MaxRemovalRatio)
+	if previousCount > 0 && float64(st.Uncovered)/float64(previousCount) > limit {
+		st.Action = "blocked"
+		st.Error = fmt.Sprintf("update removes coverage of %d/%d entries, above max_removal_ratio %.2f", st.Uncovered, previousCount, limit)
+		return st
+	}
 	if r.Config.Safety.DryRun {
 		st.Action = "update"
 		return st

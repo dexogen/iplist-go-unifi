@@ -19,6 +19,9 @@ safety:
   min_entries: 10
   max_entries: 20000
   allow_empty: false
+  max_removal_ratio: 0.35
+  require_fresh: true
+  max_source_age: "48h"
   backup_dir: "/var/lib/iplist-go-unifi/backups"
   keep_backups: 20
 
