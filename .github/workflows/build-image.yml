@@ -17,9 +17,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      image-digest: ${{ steps.image.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate release notes
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+          test -s "docs/releases/$RELEASE_TAG.md"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -102,6 +112,7 @@ jobs:
           exit 1
 
       - name: Publish multi-arch image
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -109,3 +120,26 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          cp "docs/releases/$RELEASE_TAG.md" "$notes"
+          printf '\nОбраз для фиксации по digest:\n\n    %s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" >>"$notes"
+          gh release create "$RELEASE_TAG" --verify-tag --latest \
+            --title "$RELEASE_TAG" --notes-file "$notes"
